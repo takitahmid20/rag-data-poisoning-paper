@@ -22,8 +22,9 @@ pdflatex main.tex
 Or use `latexmk -pdf main.tex`.
 
 The paper reports the current BAAI/bge-m3 experiment accurately: six synthetic
-PDFs, two questions, top-k=3, mixed contamination of 100%, and defended
-contamination of 0%. These are preliminary results, not a universal security
+PDFs, ten categorized questions, top-k=3, mixed contamination of 40% (4/10),
+and defended contamination of 0%. The original two-question pilot showed 100%
+contamination. These are preliminary results, not a universal security
 claim. The current untrusted document is a contamination proxy rather than a
 fully optimized PoisonedRAG passage.
 
