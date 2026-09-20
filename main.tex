@@ -48,6 +48,32 @@ Greshake et al. show that indirect prompt injection can occur when an attacker p
 \subsection{Embeddings and multilingual retrieval}
 BGE-M3 is a multilingual, multi-functionality, and multi-granularity embedding model intended for broad retrieval settings \cite{chen2024bgem3}. We use it as the sole embedding model in the final implementation so that the system's stated multilingual direction is reflected in the experiment rather than left as future configuration. The model choice does not by itself constitute a Bangla security evaluation; that requires Bangla documents and attack cases.
 
+\subsection{Comparison of research directions}
+The literature relevant to this project spans several distinct control points. Table~\ref{tab:literature} separates the threat or defense mechanism from its deployment assumption and limitation. This distinction is important because a white-box detector, a retrieval reranker, and an ingestion gate do not solve the same problem.
+
+\begin{table*}[t]
+\centering
+\caption{Comparison of relevant RAG security directions.}
+\label{tab:literature}
+\small
+\begin{tabular}{p{2.2cm}p{3.0cm}p{3.5cm}p{4.0cm}}
+\toprule
+Work or family & Primary role & Technique or evidence & Limitation relevant to this project \\
+\midrule
+Lewis et al. \cite{lewis2020rag} & RAG foundation & Retrieve passages and condition generation on external knowledge & Retrieval relevance does not establish source authority \\
+Karpukhin et al. \cite{karpukhin2020dpr} & Dense retrieval & Dual-encoder passage and question representations & Similarity ranking can promote semantically related but unsafe content \\
+Greshake et al. \cite{greshake2023indirect} & Indirect injection & Instructions embedded in retrieved data steer an integrated application & Focuses on application compromise; does not provide our pre-index gate \\
+Zou et al. \cite{zou2024poisonedrag} & Knowledge poisoning & Optimized malicious passages target retrieval and attacker-chosen answers & Strong adversarial threat differs from our current stale-document proxy \\
+Chen et al. \cite{chen2024bgem3} & Multilingual embeddings & Multi-lingual, multi-functionality, multi-granularity representations & Embedding multilinguality does not guarantee multilingual security detection \\
+OWASP \cite{owasp2025llm} & Security taxonomy & Practical risks including prompt injection and data poisoning & Guidance is broad; it does not provide a controlled RAG benchmark \\
+NIST \cite{nist2023airmf} & Risk governance & Govern, map, measure, and manage AI risks & Governance controls require concrete ingestion-level mechanisms \\
+This work & Pre-index defense & Source trust, explicit instruction patterns, and unsafe-link checks before embedding & Small synthetic corpus; limited recall and no calibrated threshold \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+The presentation associated with this project also lists Phantom, RevPRAG, CorruptRAG, PIDP-Attack, RobustRAG, and TrustRAG as comparison targets. Their exact bibliographic records were not available in the project repository at the time of writing; they are therefore not assigned invented citations here. Before archival submission, the team should verify each title, author list, venue, year, and DOI/arXiv identifier and extend Table~\ref{tab:literature}. This is preferable to presenting an attractive but unverifiable reference list.
+
 \section{Threat Model and Research Questions}
 We consider a RAG pipeline that loads PDF documents, chunks them, embeds the chunks, stores them in ChromaDB, retrieves the top-$k$ chunks, and supplies them to a language model. The attacker or data-quality failure can introduce an untrusted document into the ingestion directory. The document may contain contradictory directives, unsafe links, or explicit instructions aimed at the model or user.
 
@@ -80,6 +106,56 @@ where $R(d)$ is the set of triggered reasons. A document with any reason is quar
 
 \subsection{Operational behavior}
 In mixed mode, all six PDFs are indexed. In defended mode, the gate rejects the untrusted PDF before embedding and indexes the remaining five trusted PDFs. The quarantined document is not deleted; the ingestion output reports its name, score, and reasons so that a reviewer can inspect it.
+
+\subsection{Algorithm and control-flow placement}
+Algorithm~\ref{alg:gate} summarizes the implemented control flow. The key property is that the gate receives the complete extracted document before the splitter and embedding call. Therefore, a rejected document contributes no vector to the defended collection.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.94\columnwidth}{
+\centering
+\textbf{Document} $\rightarrow$ \textbf{PyPDF extraction} $\rightarrow$ \textbf{Trust gate}\\[2pt]
+\hfill$\swarrow$ accepted \hspace{35mm} rejected $\searrow$\\[-2pt]
+\textbf{chunk} $\rightarrow$ \textbf{BGE-M3} $\rightarrow$ \textbf{ChromaDB} \hspace{8mm} \textbf{quarantine + reasons}
+}}
+\caption{Pre-index control point implemented in the repository.}
+\label{fig:architecture}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Pre-index gate signals and actions.}
+\label{tab:gate}
+\small
+\begin{tabular}{p{2.0cm}p{2.7cm}p{1.8cm}}
+\toprule
+Signal & Example & Action \\
+\midrule
+Source trust & Outside \texttt{data/trusted} & Quarantine \\
+Instruction & ``MFA not required'' & Quarantine \\
+Credential abuse & Plain-text password request & Quarantine \\
+Unsafe artifact & HTTP link or setup archive & Quarantine \\
+No signal & Trusted policy text & Index \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Gate procedure.}
+\label{alg:gate}
+\small
+\begin{tabular}{p{0.94\columnwidth}}
+\toprule
+\textbf{PreIndexGate}(d) \\
+1. Extract full text and initialize $R\leftarrow\emptyset$.\\
+2. If the source is outside the trusted corpus, add a provenance reason.\\
+3. Match explicit instruction and unsafe-artifact patterns; add each reason.\\
+4. Compute $s=\min(1,0.25|R|)$.\\
+5. If $|R|>0$, preserve $d$ in quarantine; otherwise split and embed $d$.\\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Experimental Method}
 \subsection{Corpus}
@@ -118,10 +194,19 @@ The result also exposes the central trade-off. A source-path rule can reject eve
 
 The faculty feedback motivating this work identified several comparison requirements: indirect prompt-injection literature must be included; the defense landscape must not be reduced to one method; and stale documents must not be described as adversarially optimized poisoning passages. This paper adopts those distinctions explicitly. It treats provenance and ingestion filtering as defense families to compare in future work, while limiting the present empirical claim to the implemented gate and corpus.
 
+\subsection{Security interpretation}
+The 100 percentage-point reduction is structurally linked to the gate's conservative source rule: the known untrusted file is rejected before indexing. It is not an estimate of recall against an unknown attacker. A malicious file placed under an apparently trusted path, an instruction paraphrased without the current regular-expression phrases, or an encoded Unicode payload could evade the current implementation. Conversely, a legitimate emergency policy update could be quarantined and produce a false positive. The correct interpretation is therefore control-point validation plus a reproducible baseline, not a complete security certification.
+
+\subsection{Threat-model mapping}
+The project separates three evaluation tracks. Track A is the current contamination proxy: a stale or inconsistent document competes in dense retrieval. Track B is indirect prompt injection: retrieved content contains instructions intended to influence the model or application. Track C is adversarial knowledge poisoning: an attacker optimizes passages to retrieve for target questions, as in PoisonedRAG. Only Track A is measured in the current result; Tracks B and C are planned extensions. This mapping prevents the common error of using a stale-document result as evidence against an optimized poisoning attack.
+
 \section{Limitations and Future Work}
 The evaluation has five important limitations. First, it has six synthetic PDFs and two questions, so the percentages have no statistical generalization. Second, the untrusted document is inconsistent and unsafe, but not generated by an optimization-based poisoning attack. Third, the gate uses a trusted-directory convention that is not a complete provenance system. Fourth, no Bangla or other multilingual attack documents were evaluated despite using BGE-M3. Fifth, latency, false-positive rate, adversarial recall, and repeated-trial confidence intervals were not measured.
 
-Future work should add crafted poisoning passages derived from PoisonedRAG, indirect prompt-injection variants derived from Greshake et al., Bangla and mixed-language documents, benign documents that challenge the gate, and larger public corpora such as Natural Questions or MS MARCO. The evaluation should report attack success rate, top-$k$ contamination, precision/recall of quarantine, false-positive rate, indexing latency, query latency, and ablations for each signal. Robust retrieval and trust-aware defenses should be implemented as explicit comparison baselines rather than asserted to be absent.
+Future work should add crafted poisoning passages derived from PoisonedRAG, indirect prompt-injection variants derived from Greshake et al., Bangla and mixed-language documents, benign documents that challenge the gate, and larger public corpora such as BEIR \cite{thakur2021beir}. Answer quality should be reported alongside security metrics using a reproducible RAG evaluation protocol such as RAGAS \cite{es2023ragas}. The evaluation should report attack success rate, top-$k$ contamination, precision/recall of quarantine, false-positive rate, indexing latency, query latency, and ablations for each signal. Robust retrieval and trust-aware defenses should be implemented as explicit comparison baselines rather than asserted to be absent.
+
+\subsection{Two-week experimental plan}
+The next two weeks can be organized into four measurable phases. Phase 1 adds at least 50 benign documents and 50 crafted attack documents across English and Bangla, with provenance labels. Phase 2 implements paraphrase, Unicode, invisible-text, and indirect-instruction variants. Phase 3 compares the proposed gate with no filtering, metadata-only filtering, retrieval-time trust weighting, and a semantic verifier. Phase 4 reports precision, recall, false-positive rate, attack success rate, top-$k$ contamination, indexing throughput, query latency, and confidence intervals over repeated runs. This plan directly turns the presentation objectives into reportable experiments.
 
 \section{Reproducibility and Ethics}
 The complete implementation, synthetic corpus, experiment script, tests, presentation, and generated outputs are available at \url{https://github.com/takitahmid20/rag-data-poisoning}. The key commands are:
@@ -131,6 +216,8 @@ python3 scripts/evaluate_defense.py
 python3 -m unittest discover -s tests -v
 \end{verbatim}
 No real credentials or private enterprise documents are used. The unsafe links and policy directives are synthetic examples used to test filtering behavior. The paper reports the scope and limitations of the experiment to avoid overstating a small benchmark as universal security evidence.
+
+The repository records the embedding model through \texttt{RAG\_EMBEDDING\_MODEL}, with \texttt{BAAI/bge-m3} as the final default. The evaluator rebuilds separate mixed and defended Chroma collections, ensuring that vectors from different embedding models are never mixed. The tests verify both acceptance of a benign trusted policy and quarantine of a document containing suspicious directives and unsafe artifacts.
 
 \section{Conclusion}
 We implemented and measured a lightweight pre-index trust gate for a BGE-M3-based RAG pipeline. On a six-document synthetic corpus and two policy questions, the mixed baseline placed the untrusted document in both top-$3$ result sets, while the defended pipeline quarantined it before embedding and reduced observed contamination from 100\% to 0\%. The result validates the proposed control point and provides a reproducible foundation for stronger adversarial and multilingual evaluation. It does not establish universal protection; the next scientific step is to test optimized poisoning, indirect injection, benign updates, and calibrated provenance checks at scale.
