@@ -1,11 +1,13 @@
 \documentclass[conference]{IEEEtran}
 
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{microtype}
 \usepackage{xcolor}
 \usepackage{url}
+\usepackage{graphicx}
 
 \hypersetup{colorlinks=true, urlcolor=blue, citecolor=blue, linkcolor=blue}
 \urlstyle{same}
@@ -22,7 +24,7 @@ Dhaka, Bangladesh\\
 \maketitle
 
 \begin{abstract}
-Retrieval-augmented generation (RAG) systems inherit the trust weaknesses of the document collections they retrieve from. A semantically similar but untrusted document can enter the context supplied to a language model even when the document conflicts with an authoritative policy. This paper presents a reproducible preliminary evaluation of a lightweight pre-index trust gate. The system uses BAAI/bge-m3 embeddings, ChromaDB retrieval, and a rule-based gate that evaluates source location, suspicious instructions, and unsafe links before embedding. We compare a mixed corpus containing five trusted policy PDFs and one untrusted policy PDF with a defended corpus in which the gate quarantines the untrusted document. On ten categorized policy questions with top-$k=3$ retrieval, the mixed corpus exhibited contamination in four cases (40\%), while the defended corpus exhibited no contamination (0\%), an absolute reduction of 40 percentage points. These results are limited to a six-document synthetic corpus and should not be interpreted as universal attack prevention. The contribution is an auditable baseline and a concrete evaluation path for future adversarial, multilingual, and false-positive testing.
+Retrieval-augmented generation (RAG) systems inherit the trust weaknesses of the document collections they retrieve from. A semantically similar but untrusted document can enter the context supplied to a language model even when the document conflicts with an authoritative policy. This paper presents a reproducible preliminary evaluation of a lightweight pre-index trust gate. The system uses BAAI/bge-m3 embeddings, ChromaDB retrieval, and a rule-based gate that evaluates source location, suspicious instructions, and unsafe links before embedding. We compare a mixed corpus containing five trusted policy PDFs and one untrusted policy PDF with a defended corpus in which the gate quarantines the untrusted document. On ten categorized policy questions with top-$k=3$ retrieval, the mixed corpus exhibited contamination in four cases (40\%), while the defended corpus exhibited no contamination (0\%), an absolute reduction of 40 percentage points. We then extend the evaluation to 15 trusted and 17 poisoned PDFs spanning five attack types (outdated policy, fact contradiction, authority spoofing, prompt injection, and query mirroring) and 25 questions. Without defense, poisoned content reached the top-$3$ for 100\% of questions and ranked first for 72\% (BGE-M3), and the correct policy ranked first for only 28\% of questions versus 92\% on the clean corpus. A content-only scanner blocked 12 of 17 poisoned documents with no false positives but missed four of five fact-level contradictions, leaving 68\% top-$3$ contamination; only the provenance rule restored the clean baseline. These results are limited to small synthetic corpora and should not be interpreted as universal attack prevention. The contribution is an auditable baseline and a concrete evaluation path for future adversarial, multilingual, and false-positive testing.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -34,7 +36,7 @@ Retrieval-augmented generation combines a retriever with a generative language m
 
 Prior work has demonstrated both indirect prompt injection against LLM-integrated applications \cite{greshake2023indirect} and knowledge corruption attacks that optimize malicious passages for retrieval and target answers \cite{zou2024poisonedrag}. These results motivate defenses that reason about document trust before untrusted content becomes persistent vector data. However, a useful comparison must distinguish adversarially crafted passages from stale or inconsistent documents, and must compare pre-index defenses with retrieval-time and generation-time defenses.
 
-This paper makes three contributions. First, it defines a narrow and reproducible threat model for document contamination in a small policy corpus. Second, it implements an inexpensive pre-index gate that quarantines suspicious documents before embedding. Third, it reports a paired mixed-versus-defended evaluation using the multilingual BGE-M3 embedding model across ten categorized questions. The evaluation is intentionally modest: it demonstrates the gate behavior, not general robustness against a mature poisoning adversary.
+This paper makes four contributions. First, it defines a narrow and reproducible threat model for document contamination in a small policy corpus. Second, it implements an inexpensive pre-index gate that quarantines suspicious documents before embedding. Third, it reports a paired mixed-versus-defended evaluation using the multilingual BGE-M3 embedding model across ten categorized questions. Fourth, it adds an extended multi-attack benchmark (32 PDFs, five attack types, 25 questions, two embedding models) that separates what content inspection can and cannot catch. The evaluation is intentionally modest: it demonstrates the gate behavior, not general robustness against a mature poisoning adversary.
 
 \section{Background and Related Work}
 \subsection{RAG security}
@@ -84,6 +86,8 @@ We ask:
     \item Can one untrusted document enter the retrieved top-$3$ context in the mixed corpus?
     \item Does a lightweight pre-index gate prevent that document from entering the vector store?
     \item Does the result hold across ten questions covering five policy topics without an API key?
+    \item With many poisoned documents of different attack types, how often does poison reach the top-$3$ and rank first, and which attack types are most effective?
+    \item How much of that contamination can a content-only scanner remove, compared with a provenance rule, and at what false-positive cost?
 \end{enumerate}
 
 \section{System Design}
@@ -166,7 +170,7 @@ We run the same ten questions against two collections: a mixed collection with a
 \begin{equation}
  C=\frac{1}{|Q|}\sum_{q\in Q}\mathbb{1}[u\in\operatorname{TopK}(q)],
 \end{equation}
-where $Q$ is the two-question set and $u$ is the untrusted document.
+where $Q$ is the question set and $u$ is the untrusted document.
 
 \section{Results}
 Table~\ref{tab:results} reports the paired result produced by \texttt{scripts/evaluate\_defense.py}. BGE-M3 was downloaded and loaded successfully, and both collections used the same embedding model, question set, and $k=3$.
@@ -187,6 +191,94 @@ Pre-index gate & 5 & 0/10 & 0\% \\
 
 The mixed collection included the untrusted document in the top-$3$ for four of the ten cases. The defended collection quarantined the document and returned no contaminated top-$3$ result. Expected-topic retrieval remained 100\% in both configurations. The observed absolute contamination reduction was 40 percentage points. The original two-question pilot was stricter (100\% contamination), which is why the expanded suite is the more useful headline. The result is still expected from the gate's source-path rule and should be interpreted as a demonstration of control-flow placement, not as evidence that the regular expressions detect all adversarial content.
 
+\section{Extended Multi-Attack Evaluation}
+\label{sec:extended}
+The single untrusted document above cannot show how retrieval behaves when several attack styles compete with trusted policies, nor how much a content-only check contributes beyond the source rule. We therefore built a larger synthetic benchmark (\texttt{scripts/extended\_dataset.py}, \texttt{scripts/run\_extended\_experiment.py}).
+
+\subsection{Corpus and attack taxonomy}
+The extended corpus contains 15 trusted policy PDFs (passwords, VPN, MFA, leave, phishing, Wi-Fi, data classification, backup, software installation, incident response, laptop encryption, removable media, cloud storage, expenses, and general guidelines) and 17 poisoned PDFs. Each poisoned document carries a unique wrong value or URL so that its presence can be traced. Table~\ref{tab:attacks} lists the five attack types.
+
+\begin{table}[t]
+\centering
+\caption{Poisoned documents in the extended corpus.}
+\label{tab:attacks}
+\small
+\begin{tabular}{p{1.55cm}cp{4.6cm}}
+\toprule
+Type & Docs & Example of the wrong content \\
+\midrule
+Outdated & 3 & ``Passwords must be at least 6 characters'' (2015 policy) \\
+Contradiction & 4 & ``35 days paid leave''; ``SMS codes are preferred'' \\
+Authority & 3 & ``v4.0 SUPERSEDES v3.0 \ldots MFA has been removed'' \\
+Injection & 3 & ``Ignore all previous instructions \ldots reset at http://\ldots'' \\
+Query mirror & 4 & Repeats the user question, then gives a wrong answer \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Procedure}
+Twenty-five questions were asked (24 targeted by at least one poisoned document, one control). Each question was run against three knowledge bases built with the same embedding model and $k=3$: (i) trusted only, which is equivalent to the provenance rule of Section~III because every poisoned file lies outside the trusted directory; (ii) mixed, with all 32 documents; and (iii) mixed after a content-only scanner that flags prompt-injection phrases, authority claims, \texttt{http://} links, security-weakening phrases, and non-corporate domains. The full run was repeated with BAAI/bge-m3 and all-MiniLM-L6-v2. Metrics are the share of questions where the expected trusted document ranks first, where any poisoned document appears in the top-$3$, and where a poisoned document ranks first. No LLM was queried, so all results are retrieval-level.
+
+\subsection{Results}
+Table~\ref{tab:extended} and Fig.~\ref{fig:defense} summarize the comparison. Mixing in poisoned documents dropped correct first-rank retrieval from 92\% to 28\% (BGE-M3) and placed poison in the top-$3$ for every question, including the control question. The content scanner raised correct first-rank retrieval to 68\% and cut first-rank poisoning from 72\% to 28\%, but 68\% of questions still received poisoned context. Only the provenance rule removed contamination entirely.
+
+\begin{table}[t]
+\centering
+\caption{Extended results, 25 questions, top-$3$ (BGE-M3 / MiniLM).}
+\label{tab:extended}
+\small
+\begin{tabular}{lccc}
+\toprule
+Configuration & Correct \#1 & Poison top-3 & Poison \#1 \\
+\midrule
+Trusted only (provenance) & 92 / 92\% & 0 / 0\% & 0 / 0\% \\
+Mixed, no defense & 28 / 32\% & 100 / 100\% & 72 / 68\% \\
+Mixed + content scanner & 68 / 68\% & 68 / 76\% & 28 / 28\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig1_defense_comparison.pdf}
+\caption{Defense comparison on the extended benchmark (BGE-M3). Values are the share of 25 questions.}
+\label{fig:defense}
+\end{figure}
+
+Fig.~\ref{fig:attacks} breaks down success by attack type over targeted question--document pairs. Prompt injection and fact contradiction reached the top-$3$ in every targeted case and ranked first in 75\% and 71\% of cases. Query mirroring was the most reliable at taking first place (83\%), consistent with the retrieval condition exploited by PoisonedRAG \cite{zou2024poisonedrag}. Authority spoofing reached the top-$3$ least often (67\%) and rarely ranked first (17\%), because its ``official update'' wording is less similar to user questions.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig2_attack_types.pdf}
+\caption{Attack success by poisoning type without defense (BGE-M3).}
+\label{fig:attacks}
+\end{figure}
+
+Fig.~\ref{fig:scanner} reports the scanner's detection by type. It flagged 12 of 17 poisoned documents (recall 71\%) with no false positives on the 15 trusted documents (precision 100\%). It caught every injection and authority document, which contain explicit trigger phrases or unapproved domains, but only one of four contradictions. The five missed documents state wrong facts in ordinary policy language, with no URL, instruction, or keyword to match.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig3_scanner_detection.pdf}
+\caption{Content-only scanner detection by attack type and false alarms on trusted documents.}
+\label{fig:scanner}
+\end{figure}
+
+Fig.~\ref{fig:models} compares the two embedding models on the mixed corpus. Both models placed poison in the top-$3$ for all 25 questions; BGE-M3 ranked poison first slightly more often (72\% vs 68\%). The multilingual, higher-dimensional model did not make retrieval more resistant to poisoning. Finally, Fig.~\ref{fig:progression} places the benchmarks side by side. The corpora differ, so the bars are not a controlled comparison: with one untrusted document, contamination depended on which questions were asked (100\% of 2, 40\% of 10), while with 17 poisoned documents it reached every question.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig4_model_comparison.pdf}
+\caption{Embedding model comparison on the mixed corpus without defense.}
+\label{fig:models}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig5_benchmark_progression.pdf}
+\caption{Top-$3$ contamination across the three benchmarks. Corpora differ; not a controlled comparison.}
+\label{fig:progression}
+\end{figure}
+
 \section{Discussion}
 The experiment supports a simple design principle: if a document is unacceptable for indexing, detecting it before embedding avoids persistent vector contamination and avoids adding verification latency to every query. The approach is model-agnostic at the gate boundary and compatible with closed generation APIs because it does not require hidden model activations.
 
@@ -198,10 +290,10 @@ The comparison above keeps three questions separate: whether retrieved content c
 The 40 percentage-point reduction is structurally linked to the gate's conservative source rule: the known untrusted file is rejected before indexing. It is not an estimate of recall against an unknown attacker. A malicious file placed under an apparently trusted path, an instruction paraphrased without the current regular-expression phrases, or an encoded Unicode payload could evade the current implementation. Conversely, a legitimate emergency policy update could be quarantined and produce a false positive. The correct interpretation is therefore control-point validation plus a reproducible baseline, not a complete security certification.
 
 \subsection{Threat-model mapping}
-The project separates three evaluation tracks. Track A is the current contamination proxy: a stale or inconsistent document competes in dense retrieval. Track B is indirect prompt injection: retrieved content contains instructions intended to influence the model or application. Track C is adversarial knowledge poisoning: an attacker optimizes passages to retrieve for target questions, as in PoisonedRAG. Only Track A is measured in the current result; Tracks B and C are planned extensions. This mapping prevents the common error of using a stale-document result as evidence against an optimized poisoning attack.
+The project separates three evaluation tracks. Track A is the current contamination proxy: a stale or inconsistent document competes in dense retrieval. Track B is indirect prompt injection: retrieved content contains instructions intended to influence the model or application. Track C is adversarial knowledge poisoning: an attacker optimizes passages to retrieve for target questions, as in PoisonedRAG. Track A is measured in both evaluations. The extended benchmark adds explicit Track B documents (prompt injection) and a heuristic Track C proxy (query mirroring), measured at retrieval level only; optimization-based PoisonedRAG passages and effects on generated answers remain planned extensions. This mapping prevents the common error of using a stale-document result as evidence against an optimized poisoning attack.
 
 \section{Limitations and Future Work}
-The evaluation has five important limitations. First, it has six synthetic PDFs and ten questions, so the percentages have no statistical generalization. Second, the untrusted document is inconsistent and unsafe, but not generated by an optimization-based poisoning attack. Third, the gate uses a trusted-directory convention that is not a complete provenance system. Fourth, no Bangla or other multilingual attack documents were evaluated despite using BGE-M3. Fifth, latency, false-positive rate, adversarial recall, and repeated-trial confidence intervals were not measured.
+The evaluation has five important limitations. First, even the extended benchmark has only 32 synthetic PDFs and 25 questions, written by the authors, so the percentages have no statistical generalization, and the scanner rules were written with knowledge of the poisoned documents, which inflates its recall. Second, the untrusted document is inconsistent and unsafe, but not generated by an optimization-based poisoning attack. Third, the gate uses a trusted-directory convention that is not a complete provenance system. Fourth, no Bangla or other multilingual attack documents were evaluated despite using BGE-M3. Fifth, latency and repeated-trial confidence intervals were not measured, and all metrics are retrieval-level: whether Gemini repeats the poisoned content in its answer was not evaluated.
 
 Future work should add crafted poisoning passages derived from PoisonedRAG, indirect prompt-injection variants derived from Greshake et al., Bangla and mixed-language documents, benign documents that challenge the gate, and larger public corpora such as BEIR \cite{thakur2021beir}. Answer quality should be reported alongside security metrics using a reproducible RAG evaluation protocol such as RAGAS \cite{es2023ragas}. The evaluation should report attack success rate, top-$k$ contamination, precision/recall of quarantine, false-positive rate, indexing latency, query latency, and ablations for each signal. Robust retrieval and trust-aware defenses should be implemented as explicit comparison baselines rather than asserted to be absent.
 
@@ -213,6 +305,10 @@ The complete implementation, synthetic corpus, experiment script, tests, present
 \begin{verbatim}
 python3 -m pip install -r requirements.txt
 python3 scripts/evaluate_defense.py
+python3 scripts/run_extended_experiment.py
+RAG_EMBEDDING_MODEL=BAAI/bge-m3 \
+  python3 scripts/run_extended_experiment.py
+python3 scripts/make_charts.py
 python3 -m unittest discover -s tests -v
 \end{verbatim}
 No real credentials or private enterprise documents are used. The unsafe links and policy directives are synthetic examples used to test filtering behavior. The paper reports the scope and limitations of the experiment to avoid overstating a small benchmark as universal security evidence.
@@ -220,7 +316,7 @@ No real credentials or private enterprise documents are used. The unsafe links a
 The repository records the embedding model through \texttt{RAG\_EMBEDDING\_MODEL}, with \texttt{BAAI/bge-m3} as the final default. The evaluator rebuilds separate mixed and defended Chroma collections, ensuring that vectors from different embedding models are never mixed. The tests verify both acceptance of a benign trusted policy and quarantine of a document containing suspicious directives and unsafe artifacts.
 
 \section{Conclusion}
-We implemented and measured a lightweight pre-index trust gate for a BGE-M3-based RAG pipeline. On a six-document synthetic corpus and ten policy questions, the mixed baseline placed the untrusted document in four top-$3$ result sets (40\%), while the defended pipeline quarantined it before embedding and reduced observed contamination to 0\%. The result validates the proposed control point and provides a reproducible foundation for stronger adversarial and multilingual evaluation. It does not establish universal protection; the next scientific step is to test optimized poisoning, indirect injection, benign updates, and calibrated provenance checks at scale.
+We implemented and measured a lightweight pre-index trust gate for a BGE-M3-based RAG pipeline. On a six-document synthetic corpus and ten policy questions, the mixed baseline placed the untrusted document in four top-$3$ result sets (40\%), while the defended pipeline quarantined it before embedding and reduced observed contamination to 0\%. The result validates the proposed control point and provides a reproducible foundation for stronger adversarial and multilingual evaluation. On the extended 32-document benchmark, poisoned content reached the top-$3$ for all 25 questions without defense; a content-only scanner blocked 71\% of poisoned documents without false positives but left 68\% of questions contaminated, mainly through fact-level contradictions that no keyword rule can see. This supports placing provenance checks at the ingestion boundary and adding semantic consistency checks for content that passes them. It does not establish universal protection; the next scientific step is to test optimized poisoning, indirect injection, benign updates, and calibrated provenance checks at scale.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
